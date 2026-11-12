@@ -1,0 +1,4 @@
+velocity_publisher:
+  ros__parameters:
+    linear_speed: 0.3
+    angular_speed: 0.1
