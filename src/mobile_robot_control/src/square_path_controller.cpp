@@ -18,6 +18,9 @@ public:
         declare_parameter<double>("side_length", 1.0);
         declare_parameter<double>("max_linear_speed", 0.2);
         declare_parameter<double>("max_angular_speed", 0.4);
+        declare_parameter<double>("settle_time", 0.5);
+        declare_parameter<double>("stop_linear_tolerance", 0.01);
+        declare_parameter<double>("stop_angular_tolerance", 0.02);
 
         cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>(
             "/cmd_vel", 10);
@@ -41,7 +44,9 @@ private:
     enum class State {
         WAITING,
         MOVING,
+        STOPPING_FOR_TURN,
         ROTATING,
+        STOPPING_AFTER_TURN,
         FINISHED
     };
 
@@ -86,7 +91,45 @@ private:
             yaw_ = yaw;
         }
 
-        last_odom_time_ = now();
+        const auto sample_time = now();
+        const bool fresh_interval = have_stop_sample_ &&
+            (sample_time - last_odom_time_).seconds() >= 0.0 &&
+            (sample_time - last_odom_time_).seconds() <= 0.5;
+        last_odom_time_ = sample_time;
+
+        if (state_ == State::STOPPING_FOR_TURN ||
+            state_ == State::STOPPING_AFTER_TURN) {
+            const auto &v = msg->twist.twist;
+            const bool stopped =
+                std::isfinite(v.linear.x) && std::isfinite(v.linear.y) &&
+                std::isfinite(v.angular.z) &&
+                std::hypot(v.linear.x, v.linear.y) <=
+                    get_parameter("stop_linear_tolerance").as_double() &&
+                std::abs(v.angular.z) <=
+                    get_parameter("stop_angular_tolerance").as_double();
+
+            if (!stopped) {
+                have_stop_sample_ = false;
+            } else if (!fresh_interval) {
+                stopped_since_ = sample_time;
+                have_stop_sample_ = true;
+            }
+        }
+    }
+
+    void begin_stop(State next_state)
+    {
+        publish_stop();
+        state_ = next_state;
+        have_stop_sample_ = false;
+    }
+
+    bool stop_settled() const
+    {
+        // Require fresh odometry throughout the dwell, not just elapsed time.
+        return have_stop_sample_ &&
+            (last_odom_time_ - stopped_since_).seconds() >=
+                get_parameter("settle_time").as_double();
     }
 
     void start_segment()
@@ -104,6 +147,7 @@ private:
         if (!have_odom_ ||
             (now() - last_odom_time_).seconds() > 0.5) {
             publish_stop();
+            have_stop_sample_ = false;
             return;
         }
 
@@ -126,13 +170,11 @@ private:
             double error = target - traveled;
 
             if (error <= 0.02) {
-                publish_stop();
-                state_ = State::ROTATING;
-                start_segment();
+                begin_stop(State::STOPPING_FOR_TURN);
 
                 RCLCPP_INFO(
                     get_logger(),
-                    "Side %d complete. Rotating...",
+                    "Side %d complete. Waiting to stop before rotating...",
                     completed_sides_ + 1);
                 return;
             }
@@ -153,6 +195,14 @@ private:
             break;
         }
 
+        case State::STOPPING_FOR_TURN:
+            publish_stop();
+            if (stop_settled()) {
+                start_segment();
+                state_ = State::ROTATING;
+            }
+            return;
+
         case State::ROTATING: {
             double rotated =
                 accumulated_yaw_ - start_yaw_;
@@ -160,36 +210,7 @@ private:
             double error = PI / 2.0 - rotated;
 
             if (std::abs(error) < 0.02) {
-                publish_stop();
-                RCLCPP_INFO(
-                    get_logger(),
-                    "Turn %d: actual rotation = %.2f deg",
-                    completed_sides_ + 1,
-                    rotated * 180.0 / PI
-                );
-                completed_sides_++;
-
-                if (completed_sides_ >= 4) {
-                    state_ = State::FINISHED;
-
-                    double dx = x_ - initial_x_;
-                    double dy = y_ - initial_y_;
-
-                    double position_error = std::hypot(dx, dy);
-
-                    RCLCPP_INFO(
-                        get_logger(),
-                        "Square path completed!");
-                    RCLCPP_INFO(
-                        get_logger(),
-                        "Final position error: %.3f m",
-                        position_error);
-                } else {
-                    state_ = State::MOVING;
-                    start_segment();
-                    segment_heading_ =
-                        normalize_angle(yaw_);
-                }
+                begin_stop(State::STOPPING_AFTER_TURN);
                 return;
             }
 
@@ -201,6 +222,32 @@ private:
 
             break;
         }
+
+        case State::STOPPING_AFTER_TURN:
+            publish_stop();
+            if (!stop_settled()) {
+                return;
+            }
+
+            RCLCPP_INFO(
+                get_logger(),
+                "Turn %d: settled odometry rotation = %.2f deg",
+                completed_sides_ + 1,
+                (accumulated_yaw_ - start_yaw_) * 180.0 / PI);
+            completed_sides_++;
+
+            if (completed_sides_ >= 4) {
+                state_ = State::FINISHED;
+                RCLCPP_INFO(get_logger(), "Square path completed!");
+                RCLCPP_INFO(
+                    get_logger(), "Final position error: %.3f m",
+                    std::hypot(x_ - initial_x_, y_ - initial_y_));
+            } else {
+                start_segment();
+                segment_heading_ = normalize_angle(yaw_);
+                state_ = State::MOVING;
+            }
+            return;
 
         case State::FINISHED:
         case State::WAITING:
@@ -218,6 +265,7 @@ private:
     State state_ = State::WAITING;
 
     bool have_odom_ = false;
+    bool have_stop_sample_ = false;
     int completed_sides_ = 0;
 
     double x_ = 0.0;
@@ -233,6 +281,7 @@ private:
     double segment_heading_ = 0.0;
 
     rclcpp::Time last_odom_time_{0, 0, RCL_ROS_TIME};
+    rclcpp::Time stopped_since_{0, 0, RCL_ROS_TIME};
 };
 
 int main(int argc, char **argv)

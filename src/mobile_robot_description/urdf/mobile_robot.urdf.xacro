@@ -7,6 +7,10 @@
   <xacro:property name="base_height" value="0.12"/>
   <xacro:property name="wheel_radius" value="0.08"/>
   <xacro:property name="wheel_width" value="0.04"/>
+  <xacro:property name="geometric_wheel_separation" value="0.34"/>
+  <!-- Empirical DiffDrive compensation; does not change physical wheel positions.
+       See docs/calibration.md for measurements and limitations. -->
+  <xacro:property name="effective_wheel_separation" value="0.304"/>
 
   <!-- Robot coordinate origin at ground level -->
   <link name="base_footprint"/>
@@ -82,8 +86,8 @@
 
   </xacro:macro>
 
-  <xacro:wheel side="left" y_position="0.17"/>
-  <xacro:wheel side="right" y_position="-0.17"/>
+  <xacro:wheel side="left" y_position="${geometric_wheel_separation / 2}"/>
+  <xacro:wheel side="right" y_position="${-geometric_wheel_separation / 2}"/>
 
   <!-- Rear support ball -->
   <link name="caster_link">
@@ -125,8 +129,14 @@
       <left_joint>left_wheel_joint</left_joint>
       <right_joint>right_wheel_joint</right_joint>
 
-      <wheel_separation>0.304</wheel_separation>
-      <wheel_radius>0.08</wheel_radius>
+      <wheel_separation>${effective_wheel_separation}</wheel_separation>
+      <wheel_radius>${wheel_radius}</wheel_radius>
+
+      <!-- Smooth both acceleration and braking before wheel-speed conversion. -->
+      <min_linear_acceleration>-0.3</min_linear_acceleration>
+      <max_linear_acceleration>0.3</max_linear_acceleration>
+      <min_angular_acceleration>-0.8</min_angular_acceleration>
+      <max_angular_acceleration>0.8</max_angular_acceleration>
 
       <topic>/cmd_vel</topic>
       <odom_topic>/odom</odom_topic>
