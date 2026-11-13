@@ -11,6 +11,7 @@ The project focuses on robot motion control, odometry feedback, simulation valid
 - ROS 2 C++ publisher/subscriber nodes
 - Odometry-based distance and rotation control
 - Finite State Machine (FSM) for square-path execution
+- Acceleration-limited drive commands and odometry-based settling between motions
 - Differential-drive parameter calibration
 
 ## Tech Stack
@@ -30,6 +31,18 @@ In one test with a target side length of 1.0 m, the controller reported a final 
 
 The difference between wheel odometry and Gazebo ground-truth rotation was also investigated through empirical differential-drive calibration.
 
+The current drive configuration keeps the physical wheel separation at 0.34 m
+and uses an empirically calibrated effective separation of 0.304 m in DiffDrive,
+with linear acceleration limited to ±0.3 m/s² and angular acceleration to
+±0.8 rad/s². The square-path controller commands zero velocity between motions
+and waits for odometry speeds to remain below 0.01 m/s and 0.02 rad/s for 0.5 s.
+These thresholds are configurable through `stop_linear_tolerance`,
+`stop_angular_tolerance`, and `settle_time`. This checks wheel-odometry motion;
+it does not measure body pitch or ground-truth stability.
+
+The measurements above predate these changes and should be revalidated for the
+current configuration.
+
 See [Calibration Analysis](docs/calibration.md) for experimental measurements, limitations, and further investigation.
 
 ## Build
@@ -37,7 +50,7 @@ See [Calibration Analysis](docs/calibration.md) for experimental measurements, l
 ```bash
 cd ~/mobile_robot_ws
 colcon build --symlink-install \
-  --packages-select mobile_robot_control mobile_robot_description
+  --packages-select mobile_robot_control mobile_robot_description mobile_robot_simulation
 source install/setup.bash
 ```
 
